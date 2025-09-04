@@ -279,7 +279,7 @@
             </div>
             <div class="form-group">
                 <label for="time">출발시간</label>
-                <input type="time" id="time">
+                <input type="time" id="time" step="60" placeholder="HH:mm">
             </div>
             <div class="form-group">
                 <label for="numToCheck">조회할 열차 개수</label>
@@ -304,6 +304,16 @@
             <div class="form-group" style="flex: 1 1 100%;">
                 <label>로그 (서버 상태)</label>
                 <div id="log"></div>
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group" style="flex: 1 1 100%;">
+                <label for="serverUrl">서버 주소 (백엔드 URL)</label>
+                <input type="url" id="serverUrl" placeholder="예: http://localhost:3000 또는 https://your-backend.example.com">
+                <div style="color:#cfcbe6; font-size:0.85rem; margin-top:0.35rem;">
+                    GitHub Pages에선 이 웹앱은 정적 호스팅만 제공돼요. 자동화를 위해서는 <b>별도 백엔드</b>가 필요합니다.
+                    로컬에서 서버를 실행 중이면 <code>http://localhost:3000</code>을 입력하세요. 원격 서버가 있다면 해당 URL을 입력하세요.
+                </div>
             </div>
         </div>
     </div>

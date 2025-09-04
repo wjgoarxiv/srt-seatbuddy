@@ -148,7 +148,7 @@ startBtn.addEventListener('click', async () => {
     const time = document.getElementById('time').value;
     const numToCheck = parseInt(document.getElementById('numToCheck').value, 10) || 1;
     const mode = document.querySelector('input[name="mode"]:checked').value;
-    const serverUrl = DEFAULT_SERVER_URL;
+    const serverUrl = (document.getElementById('serverUrl').value || '').trim() || DEFAULT_SERVER_URL;
     const headless = document.getElementById('headless').value === 'true';
 
     // 검증
@@ -178,7 +178,8 @@ startBtn.addEventListener('click', async () => {
         date,
         time,
         numToCheck,
-        mode
+        mode,
+        serverUrl
     }));
 
     // 알림 권한은 추후 기능 확장 시 요청 예정
