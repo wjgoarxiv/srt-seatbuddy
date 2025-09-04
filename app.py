@@ -67,13 +67,21 @@ def is_cancelled():
 def setup_chrome(headless: bool) -> webdriver.Chrome:
     opts = ChromeOptions()
     if headless:
+        # Prefer new headless; container fallbacks handled below
         opts.add_argument("--headless=new")
+        # Needed to avoid DevToolsActivePort errors in containers
+        opts.add_argument("--remote-debugging-port=9222")
     opts.add_argument("--disable-gpu")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--window-size=1280,1000")
+    opts.add_argument("--disable-extensions")
+    opts.add_argument("--disable-software-rasterizer")
+    opts.add_argument("--no-first-run")
+    opts.add_argument("--no-default-browser-check")
+    opts.add_argument("--hide-scrollbars")
     # Some environments require explicit binary path via CHROME_BIN
-    import os, shutil
+    import os, shutil, tempfile
     chrome_bin = os.environ.get("CHROME_BIN")
     if not chrome_bin:
         for cand in ("/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome"):
@@ -83,6 +91,10 @@ def setup_chrome(headless: bool) -> webdriver.Chrome:
     if chrome_bin:
         opts.binary_location = chrome_bin
 
+    # Use an isolated, writable user data dir in containers
+    user_data_dir = os.environ.get("CHROME_USER_DATA_DIR") or tempfile.mkdtemp(prefix="chrome-data-")
+    opts.add_argument(f"--user-data-dir={user_data_dir}")
+
     # Prefer system-installed chromedriver if present (Streamlit Cloud via packages.txt)
     system_driver = None
     for cand in ("/usr/bin/chromedriver", "/usr/lib/chromium/chromedriver"):
@@ -90,16 +102,38 @@ def setup_chrome(headless: bool) -> webdriver.Chrome:
             system_driver = cand
             break
 
-    if system_driver:
-        service = ChromeService(system_driver)
-        driver = webdriver.Chrome(service=service, options=opts)
-    elif _HAS_WDM:
-        # Fallback to webdriver_manager (works locally, may be blocked in some hosts)
-        service = ChromeService(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=opts)
+    def _build_with(service_path: str | None):
+        if service_path:
+            return webdriver.Chrome(service=ChromeService(service_path), options=opts)
+        return webdriver.Chrome(options=opts)
+
+    last_err = None
+    for service_path in [system_driver, None if not _HAS_WDM else ChromeDriverManager().install(), None]:
+        try:
+            driver = _build_with(service_path)
+            break
+        except WebDriverException as e:
+            last_err = e
+            # Retry once with legacy headless if new headless fails to start Chrome
+            msg = str(e)
+            if "DevToolsActivePort" in msg or "failed to start" in msg:
+                try:
+                    # Switch to legacy headless flag and retry
+                    try:
+                        opts.arguments.remove("--headless=new")
+                    except ValueError:
+                        pass
+                    opts.add_argument("--headless")
+                    driver = _build_with(service_path)
+                    break
+                except Exception as e2:
+                    last_err = e2
+                    continue
+            else:
+                continue
     else:
-        # Last resort: Selenium Manager (needs Chromium/Chrome available)
-        driver = webdriver.Chrome(options=opts)
+        # If loop didn't break with a driver
+        raise last_err if last_err else RuntimeError("Failed to start Chrome driver")
 
     # Implicit wait helps with minor DOM delays
     driver.implicitly_wait(8)
