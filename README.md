@@ -1,6 +1,22 @@
 # srt-seatbuddy
 
-친근하고 가벼운 SRT 자동 예매 웹앱 소스코드에요.
+친근하고 가벼운 SRT 자동 예매 웹앱이에요.
+
+## 스트림릿 서비스(권장)
+
+- 바로 사용: https://srt-seatbuddy.streamlit.app/
+- 특징: 프론트(UI)와 자동화가 한 앱에 통합되어 별도 백엔드 없이 실행돼요.
+- 사용 방법: 아이디/비밀번호와 조건을 입력하고 “자동 예매 시작”을 누르면 로그가 실시간으로 표시됩니다. “중지”로 즉시 취소할 수 있어요.
+
+### 로컬 실행(스트림릿)
+
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+- 필요: Python 3.9+, Google Chrome/Chromium
+- 참고: 서버/컨테이너 환경에서 크롬 경로가 특이하면 `CHROME_BIN` 환경변수로 바이너리 경로를 지정하세요.
 
 ## 주요 기능
 
@@ -8,15 +24,15 @@
 - 실시간 로그 확인, 중지 버튼으로 즉시 취소
 - 헤드리스(브라우저 숨김) 모드 선택 가능
 
-## 사이트 주소 (현재 정적 페이지 preview만 제공돼요)
+## 정적 페이지(선택) — 미리보기용
 
 - URL: https://wjgoarxiv.github.io/srt-seatbuddy/
 
 ---
 
-## 로컬 실행(내 PC에서 백엔드 구동)
+## 로컬 실행(내 PC에서 백엔드 구동, 선택)
 
-이 웹앱은 프론트엔드(정적 페이지)와 백엔드(자동화 API)로 구성돼요. 프론트는 `index.html`만으로 열 수 있고, 자동화는 `server/`의 Node 서버가 담당해요.
+이 경로는 정적 프론트(`index.html`) + Node 백엔드(`server/`)를 분리해 구동하는 방법이에요. 스트림릿 앱을 사용한다면 이 섹션은 건너뛰어도 됩니다.
 
 ### 사전 준비
 
@@ -24,6 +40,7 @@
 - Google Chrome 설치
 - ChromeDriver (자동으로 못 찾을 때 필요)
   - macOS: `brew install chromedriver`
+  - Windows: `https://sites.google.com/chromium.org/driver/`
 
 ### 백엔드 실행
 
@@ -64,11 +81,11 @@ python3 -m http.server 8000
 
 ## 폴더 구조
 
-- 프론트엔드: `index.html`, `app.js`, `train-bg.png`
+- 스트림릿 앱: `app.py` (UI+자동화 통합)
+- 프론트엔드(정적): `index.html`, `app.js`, `train-bg.png`
 - 백엔드(API): `server/index.js`(Express), `server/srt.js`(Selenium)
 - CI 설정(선택): `.github/workflows/` — GitHub Actions 용으로, 로컬 실행과는 무관
 
 ## 참고 사항
 
-- 비밀번호는 저장하지 않아요. 로컬 스토리지에는 역/날짜 같은 비민감 정보만 보관됩니다.
-
+- 스트림릿/정적 버전 모두 비밀번호는 저장하지 않아요. 필요한 최소 정보(역/날짜 등)만 브라우저에 저장될 수 있어요.
