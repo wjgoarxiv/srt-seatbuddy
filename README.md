@@ -1,5 +1,5 @@
 # srt-seatbuddy
-
+<img src = "./train-bg.png">
 친근하고 가벼운 SRT 자동 예매 웹앱이에요.
 
 ## 스트림릿 서비스(권장)
