@@ -73,16 +73,32 @@ def setup_chrome(headless: bool) -> webdriver.Chrome:
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--window-size=1280,1000")
     # Some environments require explicit binary path via CHROME_BIN
-    import os
+    import os, shutil
     chrome_bin = os.environ.get("CHROME_BIN")
+    if not chrome_bin:
+        for cand in ("/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome"):
+            if os.path.exists(cand):
+                chrome_bin = cand
+                break
     if chrome_bin:
         opts.binary_location = chrome_bin
 
-    if _HAS_WDM:
+    # Prefer system-installed chromedriver if present (Streamlit Cloud via packages.txt)
+    system_driver = None
+    for cand in ("/usr/bin/chromedriver", "/usr/lib/chromium/chromedriver"):
+        if os.path.exists(cand):
+            system_driver = cand
+            break
+
+    if system_driver:
+        service = ChromeService(system_driver)
+        driver = webdriver.Chrome(service=service, options=opts)
+    elif _HAS_WDM:
+        # Fallback to webdriver_manager (works locally, may be blocked in some hosts)
         service = ChromeService(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=opts)
     else:
-        # Fallback to default discovery (Selenium Manager) — requires Chrome/Chromium in PATH
+        # Last resort: Selenium Manager (needs Chromium/Chrome available)
         driver = webdriver.Chrome(options=opts)
 
     # Implicit wait helps with minor DOM delays
