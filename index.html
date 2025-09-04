@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SRT 자동 예매 매크로</title>
+    <!-- Pretendard font -->
+    <link rel="preconnect" href="https://cdn.jsdelivr.net"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css">
+    <style>
+        /* Global styles */
+        body {
+            margin: 0;
+            font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Helvetica Neue', Arial, 'Apple SD Gothic Neo', 'Noto Sans KR', 'Malgun Gothic', sans-serif;
+            color: #f5f5f5;
+            background-color: #0d0226;
+            /* fallback color in case image fails to load */
+            background-image: url('train-bg.png');
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Dark overlay for improved contrast */
+        body::before {
+            content: "";
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(10, 5, 35, 0.8);
+            pointer-events: none;
+            z-index: -1;
+        }
+
+        header {
+            text-align: center;
+            padding: 3rem 1rem 2rem;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 2.6rem;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            line-height: 1.2;
+            word-break: keep-all; /* 한국어 단어 중간 줄바꿈 방지 */
+            text-wrap: balance; /* 가능한 균형 잡힌 줄바꿈 (지원 브라우저) */
+        }
+
+        header p {
+            margin-top: 0.5rem;
+            font-size: 1.05rem;
+            color: #d8d3ef;
+            line-height: 1.5;
+        }
+
+        .container {
+            max-width: 820px;
+            margin: 0 auto;
+            padding: 1rem;
+            background: rgba(19, 10, 50, 0.85);
+            border-radius: 12px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+        }
+
+        .form-row {
+            display: flex;
+            flex-wrap: wrap;
+            margin-bottom: 1rem;
+        }
+
+        .form-group {
+            flex: 1 1 240px;
+            margin: 0.5rem;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .form-group label {
+            margin-bottom: 0.25rem;
+            font-size: 0.9rem;
+            color: #b7a9d3;
+        }
+
+        .form-group input,
+        .form-group select {
+            padding: 0.5rem;
+            border-radius: 6px;
+            border: none;
+            background: rgba(255, 255, 255, 0.1);
+            color: #f5f5f5;
+            font-size: 0.95rem;
+        }
+
+        .form-group input:focus,
+        .form-group select:focus {
+            outline: 2px solid #8367c7;
+        }
+
+        .radio-group {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .radio-group input {
+            margin-right: 0.25rem;
+        }
+
+        .actions {
+            display: flex;
+            justify-content: center;
+            gap: 1rem;
+            margin-top: 1.5rem;
+        }
+
+        button {
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 8px;
+            background: linear-gradient(135deg, #8367c7 0%, #6541a5 100%);
+            color: #fff;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(0,0,0,0.2);
+        }
+
+        #log {
+            background: rgba(255, 255, 255, 0.08);
+            color: #eae6ff;
+            border-radius: 10px;
+            padding: 0.5rem;
+            height: 200px;
+            overflow-y: auto;
+            font-size: 0.9rem;
+        }
+        .log-entry { display: flex; align-items: flex-start; gap: 0.6rem; padding: 0.5rem 0.75rem; border-bottom: 1px solid rgba(255,255,255,0.06); }
+        .log-entry:last-child { border-bottom: none; }
+        .log-time { color: #aa9cda; font-size: 0.8rem; min-width: 90px; text-align: right; font-variant-numeric: tabular-nums; }
+        .log-text { color: #f4f1ff; }
+        .badge { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.75rem; margin-right: 0.4rem; }
+        .badge-info { background: rgba(99, 102, 241, 0.15); color: #c7c9ff; border: 1px solid rgba(99,102,241,0.35); }
+        .badge-success { background: rgba(16, 185, 129, 0.15); color: #b7f2d9; border: 1px solid rgba(16,185,129,0.35); }
+        .badge-warn { background: rgba(234, 179, 8, 0.15); color: #f5e6b3; border: 1px solid rgba(234,179,8,0.35); }
+        .badge-error { background: rgba(239, 68, 68, 0.15); color: #ffc7c7; border: 1px solid rgba(239,68,68,0.35); }
+
+        footer {
+            margin-top: auto;
+            padding: 1.25rem 1rem 2rem;
+            text-align: center;
+            font-size: 0.85rem;
+            color: #9f8fd0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        /* Sidebar toggle button */
+        #toggleSidebarBtn {
+            position: fixed;
+            top: 16px;
+            right: 16px;
+            z-index: 10;
+            padding: 0.5rem 0.9rem;
+            border: none;
+            border-radius: 999px;
+            background: linear-gradient(135deg, #8367c7 0%, #6541a5 100%);
+            color: #fff;
+            font-size: 0.9rem;
+            cursor: pointer;
+            box-shadow: 0 6px 12px rgba(0,0,0,0.25);
+        }
+        .sidebar.hidden { display: none; }
+
+        /* Mobile responsive */
+        .mobile-br { display: none; }
+
+        @media (max-width: 768px) {
+            header { padding: 2rem 1rem 1.25rem; }
+            header h1 { font-size: 1.9rem; letter-spacing: 0.01em; }
+            header p { font-size: 0.95rem; }
+            .page-row { flex-direction: column; padding: 0 0.75rem; }
+            .container { width: 100%; box-sizing: border-box; }
+            .sidebar { flex: 1 1 auto; width: 100%; }
+            .form-group { flex: 1 1 100%; margin: 0.35rem 0; }
+            .actions { gap: 0.75rem; }
+            button { padding: 0.9rem 1.1rem; font-size: 1rem; width: 100%; }
+            #toggleSidebarBtn { top: 12px; right: 12px; padding: 0.45rem 0.8rem; }
+            #log { height: 220px; }
+            .mobile-br { display: inline; }
+        }
+    </style>
+</head>
+<body>
+    <button id="toggleSidebarBtn" aria-expanded="true" aria-controls="sidebar">🙈</button>
+    <header>
+        <h1>필요한 순간,<span class="mobile-br"><br></span> SRT 좌석을 자동으로</h1>
+        <p>원하는 시간대의 잔여 좌석을 빠르게 찾아 예약까지 이어주는 자동 예매 도우미입니다.</p>
+    </header>
+    <div class="page-row" style="display:flex; gap:1rem; align-items:stretch; padding: 0 1rem; max-width: 1100px; margin: 0 auto; width: 100%; box-sizing: border-box;">
+    <div class="container" style="flex: 1 1 680px;">
+        <div class="form-row">
+            <div class="form-group">
+                <label for="userId">SRT 아이디</label>
+                <input type="text" id="userId" placeholder="회원 아이디">
+            </div>
+            <div class="form-group">
+                <label for="password">비밀번호</label>
+                <input type="password" id="password" placeholder="비밀번호">
+            </div>
+        </div>
+        <details style="background: rgba(255,255,255,0.06); border-radius: 10px; padding: 0.75rem 1rem; margin: 0.5rem;">
+            <summary style="cursor:pointer; color:#d8d3ef;">고급 설정 (헤드리스)</summary>
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="headless">헤드리스(브라우저 숨김) 실행</label>
+                    <select id="headless">
+                        <option value="false" selected>끄기</option>
+                        <option value="true">켜기</option>
+                    </select>
+                </div>
+            </div>
+            <div style="color:#cfcbe6; font-size:0.85rem; margin: 0.25rem 0.5rem 0;">헤드리스 모드는 브라우저 창을 띄우지 않고 백그라운드에서 실행해요. 오류 상황을 확인하려면 끄고 진행하세요.</div>
+        </details>
+        <div class="form-row">
+            <div class="form-group">
+                <label for="departureStation">출발역</label>
+                <select id="departureStation">
+                    <option value="수서" selected>수서</option>
+                    <option value="동탄">동탄</option>
+                    <option value="평택지제">평택지제</option>
+                    <option value="천안아산">천안아산</option>
+                    <option value="오송">오송</option>
+                    <option value="대전">대전</option>
+                    <option value="김천(구미)">김천(구미)</option>
+                    <option value="동대구">동대구</option>
+                    <option value="신경주">신경주</option>
+                    <option value="울산(통도사)">울산(통도사)</option>
+                    <option value="부산">부산</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="arrivalStation">도착역</label>
+                <select id="arrivalStation">
+                    <option value="부산" selected>부산</option>
+                    <option value="울산(통도사)">울산(통도사)</option>
+                    <option value="신경주">신경주</option>
+                    <option value="동대구">동대구</option>
+                    <option value="김천(구미)">김천(구미)</option>
+                    <option value="대전">대전</option>
+                    <option value="오송">오송</option>
+                    <option value="천안아산">천안아산</option>
+                    <option value="평택지제">평택지제</option>
+                    <option value="동탄">동탄</option>
+                    <option value="수서">수서</option>
+                </select>
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label for="date">출발일자</label>
+                <input type="date" id="date">
+            </div>
+            <div class="form-group">
+                <label for="time">출발시간</label>
+                <input type="time" id="time">
+            </div>
+            <div class="form-group">
+                <label for="numToCheck">조회할 열차 개수</label>
+                <input type="number" id="numToCheck" min="1" max="10" value="3">
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label>모드</label>
+                <div class="radio-group">
+                    <label><input type="radio" name="mode" value="reserve" checked> 예약</label>
+                    <label><input type="radio" name="mode" value="waitlist"> 예약 대기</label>
+                </div>
+            </div>
+        </div>
+        <div class="actions">
+            <button id="startBtn">자동 예매 시작</button>
+            <button id="stopBtn" disabled>중지</button>
+        </div>
+        
+        <div class="form-row">
+            <div class="form-group" style="flex: 1 1 100%;">
+                <label>로그 (서버 상태)</label>
+                <div id="log"></div>
+            </div>
+        </div>
+    </div>
+    <aside id="sidebar" class="sidebar" style="flex: 0 0 320px; background: rgba(19, 10, 50, 0.85); border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.4); padding: 1rem;">
+        <h3 style="margin:0 0 0.5rem; font-size:1.1rem; color:#eae6ff;">안심하고 사용하세요</h3>
+        <ul style="margin:0; padding-left:1.1rem; color:#cfcbe6; line-height:1.6; font-size:0.95rem;">
+            <li>이 웹앱은 <b>아이디/비밀번호를 저장하지 않습니다</b>.</li>
+            <li>브라우저에 남는 정보는 <b>역/날짜 같은 정보들</b> 뿐이에요. <b>비밀번호는 절대 저장하지 않아요.</b></li>
+            <li>자동화는 내 PC의 크롬을 열어 <b>SRT 공식 사이트</b>를 직접 조작해요. 화면에서 모든 과정을 확인할 수 있어요.</li>
+            <li>언제든 <b>중지</b>를 눌러 즉시 멈출 수 있어요. 실행 기록은 화면의 로그에서만 확인돼요.</li>
+        </ul>
+    </aside>
+    </div>
+    <footer>
+        <div>© 2025 SRT 자동 예매 프로그램 · written by <a href="https://woojingo.notion.site" target="_blank" rel="noopener noreferrer" style="color:#d9d2f3; text-decoration: underline;">Woojin Go</a></div>
+        <a href="https://www.buymeacoffee.com/woojingo" target="_blank" rel="noopener noreferrer">
+            <img src="https://cdn.buymeacoffee.com/buttons/v2/default-red.png" alt="Buy Me A Coffee" style="height: 40px !important;width: 145px !important;">
+        </a>
+    </footer>
+
+    <!-- Load the main logic -->
+    <script src="app.js"></script>
+</body>
+</html>
