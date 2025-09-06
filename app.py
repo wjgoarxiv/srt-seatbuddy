@@ -149,6 +149,16 @@ def setup_chrome(headless: bool, debug_port: int | None = None) -> webdriver.Chr
     opts.add_argument("--no-first-run")
     opts.add_argument("--no-default-browser-check")
     opts.add_argument("--hide-scrollbars")
+    # Improve site compatibility in container/headless
+    try:
+        # Make language clearly Korean to avoid alternate layouts
+        opts.add_argument("--lang=ko-KR")
+        opts.add_experimental_option("prefs", {"intl.accept_languages": "ko-KR,ko"})
+        # Slightly reduce automation fingerprints
+        opts.add_experimental_option("excludeSwitches", ["enable-automation"])  # remove webdriver banner
+        opts.add_experimental_option("useAutomationExtension", False)
+    except Exception:
+        pass
     # Some environments require explicit binary path via CHROME_BIN
     import os, tempfile
     chrome_bin = os.environ.get("CHROME_BIN")
@@ -240,7 +250,20 @@ def run_srt_automation(params: dict, log, cancelled):
     num_to_check = int(params.get("numToCheck") or 3)
     mode = params.get("mode") or "reserve"  # reserve | waitlist
     headless = bool(params.get("headless"))
+    try:
+        speed_level = int(params.get("refreshSpeed") or 1)
+    except Exception:
+        speed_level = 1
+    speed_level = max(1, min(10, speed_level))
+    s = (speed_level - 1) / 9.0  # 0.0..1.0
+
+    def _lerp(a: float, b: float, t: float) -> float:
+        try:
+            return float(a) + (float(b) - float(a)) * float(t)
+        except Exception:
+            return b
     seat_pref = params.get("seatPref") or "both"  # economy | first | both
+    seat_order = params.get("seatOrder") or "prefer_first"  # for both: prefer_first | prefer_economy
 
     yyyymmdd = (date_str or "").replace("-", "")
     hh, mm = (time_str or "").split(":") if time_str else ("", "00")
@@ -415,6 +438,44 @@ def run_srt_automation(params: dict, log, cancelled):
         else:
             log(f"시간 옵션 선택 실패: {hh}:{mm}. 기본값으로 진행합니다.")
 
+        # Prefer SRT-only filter if available (user-reported layout)
+        srt_filter_selected = False
+        try:
+            applied = False
+            # 1) Try the provided absolute XPath first
+            try:
+                srt_radio = driver.find_element(By.XPATH, "/html/body/div[1]/div[4]/div/div[2]/form/fieldset/div[1]/div/ul/li[4]/div[2]/input[2]")
+                driver.execute_script("arguments[0].click();", srt_radio)
+                applied = True
+            except Exception:
+                pass
+            # 2) Fallback: pick the 2nd input under the same li area
+            if not applied:
+                try:
+                    radios = driver.find_elements(By.XPATH, "//form//fieldset//li[4]//div[2]//input[@type='radio' or @type='checkbox']")
+                    if len(radios) >= 2:
+                        driver.execute_script("arguments[0].click();", radios[1])
+                        applied = True
+                except Exception:
+                    pass
+            # 3) Fallback by attribute search
+            if not applied:
+                try:
+                    radios = driver.find_elements(By.CSS_SELECTOR, "input[type=radio], input[type=checkbox]")
+                    for r in radios:
+                        v = ((r.get_attribute("value") or "") + " " + (r.get_attribute("id") or "") + " " + (r.get_attribute("name") or "")).upper()
+                        if "SRT" in v:
+                            driver.execute_script("arguments[0].click();", r)
+                            applied = True
+                            break
+                except Exception:
+                    pass
+            if applied:
+                log("열차종별: SRT만 선택했습니다.")
+                srt_filter_selected = True
+        except Exception as e:
+            log(f"SRT 필터 선택 실패: {e}", "warn")
+
         log("조건 입력 완료. 조회합니다...", "info")
         try:
             query_btn = driver.find_element(By.XPATH, "//input[@value='조회하기']")
@@ -424,25 +485,100 @@ def run_srt_automation(params: dict, log, cancelled):
 
         # Main polling loop
         refresh_count = 0
+        # Some site variants don't render clear 'SRT' text/logo in col1. If we already applied
+        # the SRT-only filter in the search form, skip row-level SRT detection to avoid confusion.
+        srt_filter_enabled = not srt_filter_selected
+
+        # For the polling loop, keep implicit wait low; interpolate with speed
+        loop_iw = _lerp(0.3, 0.1, s)
+        driver.implicitly_wait(loop_iw)
+
+        # Detect column indices once, then reuse to avoid per-iteration overhead
+        cols_resolved = False
+        gen_col_idx, fst_col_idx, wait_col_idx = 7, 6, 8
         while True:
             if cancelled():
                 raise RuntimeError("사용자 중지")
 
             # Fetch result rows
-            rows = driver.find_elements(By.CSS_SELECTOR, "#result-form > fieldset > div.tbl_wrap.th_thead > table > tbody > tr")
+            table_sel = "#result-form > fieldset > div.tbl_wrap.th_thead > table"
+            rows = driver.find_elements(By.CSS_SELECTOR, f"{table_sel} > tbody > tr")
             if len(rows) == 0:
                 log("조회 결과가 없습니다. 계속 재조회합니다.")
 
-            for i in range(1, num_to_check + 1):
+            # Determine column indices dynamically from header, with fallbacks (once)
+            if not cols_resolved:
+                try:
+                    headers = driver.find_elements(By.CSS_SELECTOR, f"{table_sel} thead th")
+                    if headers:
+                        def find_idx(keywords: list[str], default: int) -> int:
+                            for idx, th in enumerate(headers, start=1):
+                                t = (th.text or "").strip()
+                                for kw in keywords:
+                                    if kw in t:
+                                        return idx
+                            return default
+                        gen_col_idx = find_idx(["일반석", "일반실", "일반"], gen_col_idx)
+                        fst_col_idx = find_idx(["특실", "특"], fst_col_idx)
+                        wait_col_idx = find_idx(["예약대기", "대기"], wait_col_idx)
+                        # Guard against ambiguous mapping (e.g., merged headers) or out-of-range
+                        num_cols = len(headers)
+                        if gen_col_idx == fst_col_idx or gen_col_idx < 1 or fst_col_idx < 1 or gen_col_idx > num_cols or fst_col_idx > num_cols:
+                            gen_col_idx, fst_col_idx = 7, 6
+                            log("열 헤더 모호/이상: 기본 매핑 사용(일반=7, 특실=6)")
+                        else:
+                            log(f"탐지된 열: 일반={gen_col_idx}, 특실={fst_col_idx}, 대기={wait_col_idx}")
+                    cols_resolved = True
+                except Exception:
+                    cols_resolved = True  # Avoid repeated attempts that can be costly
+
+            # Only consider SRT rows; skip Korail/KTX so the count is meaningful
+            checked = 0
+            row_idx = 1
+            max_rows = len(rows)
+            srt_rows_detected = 0
+            any_attempted = False
+            while checked < num_to_check and row_idx <= max_rows:
                 if cancelled():
                     raise RuntimeError("사용자 중지")
                 wait_text = ""
+
+                # Filter: keep only SRT trains (fallback to all if detection unreliable)
+                is_srt = True
+                if srt_filter_enabled:
+                    try:
+                        row_el = rows[row_idx - 1]
+                        tds = row_el.find_elements(By.CSS_SELECTOR, "td")
+                        t1txt = (tds[0].text if len(tds) > 0 else "").strip().upper()
+                        if not t1txt:
+                            try:
+                                img = tds[0].find_element(By.CSS_SELECTOR, "img")
+                                t1txt = (img.get_attribute("alt") or "").strip().upper()
+                            except Exception:
+                                t1txt = ""
+                        # Some layouts may show 'SR' logo text instead of 'SRT'
+                        is_srt = ("SRT" in t1txt) or (t1txt == "SR")
+                    except Exception:
+                        is_srt = False
+
+                    if not is_srt:
+                        # Skip non-SRT rows (e.g., Korail/KTX)
+                        row_idx += 1
+                        continue
+                    else:
+                        srt_rows_detected += 1
+
+                # Read commonly used cells; actual seat type layout may vary across site versions
                 try:
-                    # Read commonly used cells; actual seat type layout may vary across site versions
-                    # Col 8 often used for 특실 or 예약대기; keep as wait column for legacy behavior
-                    td8 = driver.find_element(By.CSS_SELECTOR, f"#result-form > fieldset > div.tbl_wrap.th_thead > table > tbody > tr:nth-child({i}) > td:nth-child(8)")
-                    wait_text = td8.text
+                    # Use detected wait column
+                    row_el = rows[row_idx - 1]
+                    tds = row_el.find_elements(By.CSS_SELECTOR, "td")
+                    if len(tds) >= wait_col_idx:
+                        wait_text = tds[wait_col_idx - 1].text
+                    else:
+                        raise Exception("열 개수 부족")
                 except Exception:
+                    row_idx += 1
                     continue
 
                 if mode != "waitlist":
@@ -450,24 +586,85 @@ def run_srt_automation(params: dict, log, cancelled):
                     # Heuristic mapping: col7(일반) and possibly col6(특실) on some layouts. Retain col7 as default.
                     candidates: list[tuple[int, str]] = []
                     if seat_pref == "economy":
-                        candidates = [(7, "일반석"), (6, "일반/대체")]
+                        # Strict: only 일반석 열 클릭
+                        candidates = [(gen_col_idx, "일반석")]
                     elif seat_pref == "first":
-                        candidates = [(6, "특실"), (7, "특실/대체")]
+                        # Strict: only 특실 열 클릭
+                        candidates = [(fst_col_idx, "특실")]
                     else:  # both
-                        candidates = [(7, "일반석"), (6, "특실")]
+                        # Order determined by seat_order
+                        candidates = []
+                        if seat_order == "prefer_first":
+                            candidates.append((fst_col_idx, "특실"))
+                            if fst_col_idx != gen_col_idx:
+                                candidates.append((gen_col_idx, "일반석"))
+                        else:  # prefer_economy
+                            candidates.append((gen_col_idx, "일반석"))
+                            if fst_col_idx != gen_col_idx:
+                                candidates.append((fst_col_idx, "특실"))
 
                     for col_idx, label in candidates:
                         try:
-                            td = driver.find_element(By.CSS_SELECTOR, f"#result-form > fieldset > div.tbl_wrap.th_thead > table > tbody > tr:nth-child({i}) > td:nth-child({col_idx})")
+                            row_el = rows[row_idx - 1]
+                            tds = row_el.find_elements(By.CSS_SELECTOR, "td")
+                            if len(tds) < col_idx:
+                                continue
+                            td = tds[col_idx - 1]
                             txt = (td.text or "").strip()
+                            # Some variants render only icon buttons; detect via attributes as well
+                            has_reserve = False
                             if "예약하기" in txt:
-                                log(f"행 {i} {label}: 예약하기 시도")
-                                a = td.find_element(By.CSS_SELECTOR, "a")
+                                has_reserve = True
+                            else:
                                 try:
-                                    a.click()
+                                    a_try = td.find_element(By.CSS_SELECTOR, "a, button, input[type=button]")
+                                    a_title = (a_try.get_attribute("title") or "") + " " + (a_try.get_attribute("aria-label") or "")
+                                    if "예약" in a_title:
+                                        has_reserve = True
                                 except Exception:
-                                    a.send_keys(Keys.ENTER)
+                                    try:
+                                        img_try = td.find_element(By.CSS_SELECTOR, "img")
+                                        alt = (img_try.get_attribute("alt") or "")
+                                        if "예약" in alt:
+                                            has_reserve = True
+                                    except Exception:
+                                        pass
+                            if has_reserve:
+                                log(f"행 {row_idx} {label}: 예약하기 시도")
+                                # Prefer a/button; fall back to ENTER. If not found, try user-reported absolute XPath pattern.
+                                a = None
+                                clicked = False
+                                try:
+                                    a = td.find_element(By.CSS_SELECTOR, "a, button, input[type=button]")
+                                except Exception:
+                                    a = None
+                                # Capture current windows to detect popup/new tab behavior
+                                try:
+                                    prev_handles = set(driver.window_handles)
+                                except Exception:
+                                    prev_handles = None
+                                try:
+                                    if a is not None:
+                                        a.click(); clicked = True
+                                    else:
+                                        td.send_keys(Keys.ENTER); clicked = True
+                                except Exception:
+                                    pass
 
+                                # Fallback with absolute XPath (user-reported structure)
+                                if not clicked:
+                                    try:
+                                        # Map our desired seat column to absolute td index (특실=6, 일반=7) if plausible
+                                        abs_td_idx = 6 if label.startswith("특실") else 7
+                                        abs_xpath = f"/html/body/div[1]/div[4]/div/div[3]/div[1]/form/fieldset/div[6]/table/tbody/tr[{row_idx}]/td[{abs_td_idx}]//a | /html/body/div[1]/div[4]/div/div[3]/div[1]/form/fieldset/div[6]/table/tbody/tr[{row_idx}]/td[{abs_td_idx}]//button | /html/body/div[1]/div[4]/div/div[3]/div[1]/form/fieldset/div[6]/table/tbody/tr[{row_idx}]/td[{abs_td_idx}]//input[@type='button']"
+                                        el = driver.find_element(By.XPATH, abs_xpath)
+                                        driver.execute_script("arguments[0].click();", el)
+                                        clicked = True
+                                        log(f"절대 XPath로 클릭 시도: td[{abs_td_idx}] (row {row_idx})")
+                                    except Exception:
+                                        pass
+
+                                any_attempted = any_attempted or clicked
                                 # Accept alert if exists
                                 try:
                                     WebDriverWait(driver, 1.5).until(EC.alert_is_present())
@@ -477,27 +674,85 @@ def run_srt_automation(params: dict, log, cancelled):
                                 except Exception:
                                     pass
 
-                                driver.implicitly_wait(3)
+                                # If a new window/tab opened, switch to it for result check
+                                switched = False
+                                try:
+                                    if prev_handles is not None:
+                                        WebDriverWait(driver, _lerp(3.0, 2.0, s)).until(
+                                            lambda d: len(d.window_handles) > len(prev_handles)
+                                        )
+                                        curr_handles = set(driver.window_handles)
+                                        new_handles = list(curr_handles - prev_handles)
+                                        if new_handles:
+                                            driver.switch_to.window(new_handles[0])
+                                            switched = True
+                                except Exception:
+                                    pass
+
+                                driver.implicitly_wait(loop_iw)
                                 ok = len(driver.find_elements(By.ID, "isFalseGotoMain")) > 0
                                 if ok:
                                     log("예약 성공! 결제 화면으로 이동했습니다.", "success")
                                     return {"ok": True, "type": "reserve", "seatPref": seat_pref}
-                                log("자리 없음. 결과 페이지로 되돌아갑니다.")
-                                driver.back()
-                                driver.implicitly_wait(5)
+                                log("자리 없음/실패. 결과 페이지로 되돌아갑니다.")
+                                # Clean up: if we switched to a new window, close it and go back to the original
+                                try:
+                                    if switched:
+                                        driver.close()
+                                        # Switch back to the first handle available
+                                        for h in driver.window_handles:
+                                            driver.switch_to.window(h)
+                                            break
+                                    else:
+                                        driver.back()
+                                except Exception:
+                                    pass
+                                driver.implicitly_wait(loop_iw)
                                 # If tried one column and failed, try next candidate
                         except Exception:
                             continue
 
-                elif mode == "waitlist" and ("신청하기" in wait_text):
-                    log(f"행 {i}: 예약대기 신청 시도")
-                    try:
-                        a = driver.find_element(By.CSS_SELECTOR, f"#result-form > fieldset > div.tbl_wrap.th_thead > table > tbody > tr:nth-child({i}) > td:nth-child(8) > a")
-                        a.click()
-                        log("예약대기 신청 성공!", "success")
-                        return {"ok": True, "type": "waitlist"}
-                    except Exception as e:
-                        log(f"예약대기 시도 중 오류: {e}", "error")
+                elif mode == "waitlist":
+                    has_apply = "신청하기" in (wait_text or "")
+                    if not has_apply:
+                        try:
+                            td8 = driver.find_element(By.CSS_SELECTOR, f"{table_sel} > tbody > tr:nth-child({row_idx}) > td:nth-child({wait_col_idx})")
+                            a8 = td8.find_element(By.CSS_SELECTOR, "a, button, input[type=button], img")
+                            label8 = ((a8.get_attribute("title") or "") + " " + (a8.get_attribute("aria-label") or "") + " " + (a8.get_attribute("alt") or "")).strip()
+                            if "신청" in label8:
+                                has_apply = True
+                        except Exception:
+                            pass
+                    if has_apply:
+                        log(f"행 {row_idx}: 예약대기 신청 시도")
+                        try:
+                            row_el = rows[row_idx - 1]
+                            tds = row_el.find_elements(By.CSS_SELECTOR, "td")
+                            tdw = tds[wait_col_idx - 1] if len(tds) >= wait_col_idx else row_el
+                            a = tdw.find_element(By.CSS_SELECTOR, "a, button, input[type=button], img")
+                            try:
+                                a.click()
+                            except Exception:
+                                a.send_keys(Keys.ENTER)
+                            any_attempted = True
+                            log("예약대기 신청 성공!", "success")
+                            return {"ok": True, "type": "waitlist"}
+                        except Exception as e:
+                            log(f"예약대기 시도 중 오류: {e}", "error")
+
+                # Count only SRT rows processed
+                checked += 1
+                row_idx += 1
+
+            # If we couldn't positively detect any SRT rows this page, disable the filter
+            if srt_filter_enabled and srt_rows_detected == 0 and max_rows > 0:
+                srt_filter_enabled = False
+                # If the SRT filter was selected earlier, this detection failure is expected.
+                # Use an info message instead of a warning only when no filter was applied.
+                if srt_filter_selected:
+                    log("행 레이블에 SRT 표기가 없어 전체 행을 검사합니다.")
+                else:
+                    log("SRT 구분 불가: 모든 열차 행을 검사로 전환합니다.", "warn")
 
             # Refresh query
             refresh_count += 1
@@ -507,8 +762,14 @@ def run_srt_automation(params: dict, log, cancelled):
                 driver.execute_script('arguments[0].click();', refresh_btn)
             except Exception:
                 pass
-            # Randomized sleep
-            time.sleep(2.0 + random.uniform(0.0, 1.5))
+            # Sleep pacing: interpolate between conservative and aggressive by speed
+            if max_rows == 0:
+                base = _lerp(2.0, 0.08, s); jitter = _lerp(1.5, 0.07, s)
+            elif not any_attempted:
+                base = _lerp(2.0, 0.18, s); jitter = _lerp(1.5, 0.25, s)
+            else:
+                base = _lerp(2.0, 0.70, s); jitter = _lerp(1.5, 0.50, s)
+            time.sleep(base + random.uniform(0.0, jitter))
 
     except RuntimeError as e:
         log(f"오류 발생: {e}", "error")
@@ -543,6 +804,7 @@ def ensure_state():
         "desktop": False,
         "webhook_url": "",
     })
+    ss.setdefault("route_templates", [])
 
 
 def stop_job():
@@ -650,7 +912,7 @@ def start_job(params: dict):
 
 
 def render_logs():
-    # Pretty badges using simple HTML
+    # Pretty badges using simple HTML; theme-aware for light/dark
     kind_map = {
         "success": ("성공", "#16a34a"),
         "warn": ("안내", "#f59e0b"),
@@ -663,6 +925,27 @@ def render_logs():
         st.info("아직 로그가 없습니다.")
         return
 
+    css = """
+    <style>
+    .log-wrap{ border-radius:10px; max-height:320px; overflow:auto; border:1px solid; }
+    .log-row{ display:flex; gap:8px; padding:6px 8px; border-bottom:1px solid; }
+    .log-time{ min-width:52px; text-align:right; font-variant-numeric:tabular-nums; }
+    .log-msg{}
+    @media (prefers-color-scheme: dark){
+        .log-wrap{ background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.08); }
+        .log-row{ border-bottom-color: rgba(255,255,255,0.06); }
+        .log-time{ color:#bbbbbb; }
+        .log-msg{ color:#eeeeee; }
+    }
+    @media (prefers-color-scheme: light){
+        .log-wrap{ background:#f9fafb; border-color:#e5e7eb; }
+        .log-row{ border-bottom-color:#e5e7eb; }
+        .log-time{ color:#6b7280; }
+        .log-msg{ color:#111827; }
+    }
+    </style>
+    """
+
     html_lines = []
     for line in logs:
         when = datetime.fromisoformat(line["t"]) if isinstance(line.get("t"), str) else datetime.now()
@@ -671,16 +954,13 @@ def render_logs():
         kind = line.get("kind", "info")
         label, color = kind_map.get(kind, kind_map["info"])
         html_lines.append(
-            f"<div style='display:flex;gap:8px;padding:6px 8px;border-bottom:1px solid rgba(255,255,255,0.06)'>"
-            f"<div style='min-width:52px;color:#aaa;text-align:right;font-variant-numeric:tabular-nums'>{t}</div>"
+            f"<div class='log-row'>"
+            f"<div class='log-time'>{t}</div>"
             f"<div><span style='display:inline-block;padding:2px 8px;border-radius:999px;background:{color}22;border:1px solid {color}66;color:{color};font-size:12px;margin-right:6px'>{label}</span>"
-            f"<span style='color:#eee'>{msg}</span></div></div>"
+            f"<span class='log-msg'>{msg}</span></div></div>"
         )
     html = "".join(html_lines)
-    st.markdown(
-        f"<div style='background:rgba(255,255,255,0.06);border-radius:10px;max-height:320px;overflow:auto'>{html}</div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown(css + f"<div class='log-wrap'>{html}</div>", unsafe_allow_html=True)
 
 
 def main():
@@ -692,6 +972,78 @@ def main():
     col_main, col_side = st.columns([2, 1])
 
     with col_main:
+        # Quick template buttons for common routes (outside forms)
+        stations_order = [
+            "수서", "동탄", "평택지제", "천안아산", "오송", "대전", "김천(구미)", "동대구", "신경주", "울산(통도사)", "부산"
+        ]
+        st.markdown("템플릿 · 자주 쓰는 노선")
+        tcol1, tcol2 = st.columns(2)
+        with tcol1:
+            if st.button("동탄 → 부산", use_container_width=True, key="tpl_default_dt_bs"):
+                st.session_state["departure"] = "동탄"
+                st.session_state["arrival"] = "부산"
+                st.success("노선 템플릿 적용: 동탄 → 부산")
+        with tcol2:
+            if st.button("부산 → 동탄", use_container_width=True, key="tpl_default_bs_dt"):
+                st.session_state["departure"] = "부산"
+                st.session_state["arrival"] = "동탄"
+                st.success("노선 템플릿 적용: 부산 → 동탄")
+
+        # Swap button kept separate from templates to reduce confusion
+        spacer_l, swap_c, spacer_r = st.columns([1, 1, 1])
+        with swap_c:
+            if st.button("역 바꾸기 ↔", use_container_width=True):
+                dep = st.session_state.get("departure")
+                arr = st.session_state.get("arrival")
+                if dep and arr:
+                    st.session_state["departure"], st.session_state["arrival"] = arr, dep
+                    st.success("출발/도착 역을 서로 바꿨어요.")
+
+        # Custom favorites: save/apply/delete current route templates
+        st.markdown("저장한 템플릿")
+        fav_name_default = f"{st.session_state.get('departure','?')} → {st.session_state.get('arrival','?')}"
+        fcol1, fcol2 = st.columns([3, 1])
+        with fcol1:
+            fav_name = st.text_input("템플릿 이름", value=fav_name_default, key="tpl_name_input")
+        with fcol2:
+            if st.button("현재 조건 저장", use_container_width=True, key="tpl_save_btn"):
+                dep = st.session_state.get("departure"); arr = st.session_state.get("arrival")
+                if not dep or not arr:
+                    st.warning("출발/도착 역을 먼저 선택하세요.")
+                else:
+                    tpl = {"name": fav_name.strip() or fav_name_default, "dep": dep, "arr": arr}
+                    # avoid duplicates by name or (dep,arr)
+                    exists = False
+                    for t in st.session_state.route_templates:
+                        if t.get("name") == tpl["name"] or (t.get("dep") == dep and t.get("arr") == arr):
+                            exists = True; break
+                    if not exists:
+                        st.session_state.route_templates.append(tpl)
+                        st.success("템플릿을 저장했어요.")
+                    else:
+                        st.info("이미 동일한 템플릿이 있어요.")
+
+        # Render saved templates with apply/delete
+        to_delete = None
+        if st.session_state.route_templates:
+            for idx, tpl in enumerate(list(st.session_state.route_templates)):
+                ac, dc = st.columns([4, 1])
+                with ac:
+                    if st.button(f"적용 · {tpl['name']}", key=f"tpl_apply_{idx}", use_container_width=True):
+                        st.session_state["departure"] = tpl.get("dep")
+                        st.session_state["arrival"] = tpl.get("arr")
+                        st.success(f"노선 템플릿 적용: {tpl['name']}")
+                with dc:
+                    if st.button("삭제", key=f"tpl_del_{idx}"):
+                        to_delete = idx
+                st.divider()
+        if to_delete is not None:
+            try:
+                del st.session_state.route_templates[to_delete]
+                st.success("템플릿을 삭제했습니다.")
+            except Exception:
+                pass
+
         with st.form("form", clear_on_submit=False):
             st.subheader("로그인 및 조건")
             c1, c2 = st.columns(2)
@@ -702,6 +1054,7 @@ def main():
 
             with st.expander("고급 설정 (헤드리스/병렬)"):
                 headless = st.selectbox("헤드리스(브라우저 숨김) 실행", options=["끄기", "켜기"], index=0) == "켜기"
+                refresh_speed = st.slider("갱신 속도", min_value=1, max_value=10, value=1, help="1=일반, 10=제일 빠름")
                 parallel_stagger_sec = st.number_input(
                     "병렬 로그인 간격(초)", min_value=0.0, max_value=5.0, value=0.5, step=0.1,
                     help="여러 매크로를 동시에 실행할 때 각 로그인 시작 간격"
@@ -712,20 +1065,19 @@ def main():
                 desktop_on = st.checkbox("성공 시 데스크탑 알림(브라우저 권한 필요)", value=bool(nc.get("desktop", False)))
                 webhook_url = st.text_input("웹훅 URL(선택)", value=str(nc.get("webhook_url", "")))
 
-            stations_order = [
-                "수서", "동탄", "평택지제", "천안아산", "오송", "대전", "김천(구미)", "동대구", "신경주", "울산(통도사)", "부산"
-            ]
             c3, c4 = st.columns(2)
             with c3:
-                departure = st.selectbox("출발역", options=stations_order, index=0)
+                departure = st.selectbox("출발역", options=stations_order, index=0, key="departure")
             with c4:
-                arrival = st.selectbox("도착역", options=list(reversed(stations_order)), index=0)
+                arrival = st.selectbox("도착역", options=list(reversed(stations_order)), index=0, key="arrival")
 
             c5, c6, c7 = st.columns([1, 1, 1])
             with c5:
                 d = st.date_input("출발일자", value=date.today())
             with c6:
-                t = st.time_input("출발시간", value=dtime(hour=8, minute=0), step=60)
+                now = datetime.now()
+                t_default = dtime(hour=now.hour, minute=now.minute)
+                t = st.time_input("출발시간", value=t_default, step=60)
             with c7:
                 num_to_check = st.number_input("조회할 열차 개수", min_value=1, max_value=10, value=3)
 
@@ -734,6 +1086,11 @@ def main():
                 seat_type_label = st.selectbox("좌석 종류", options=["일반석", "특실", "둘 다"], index=2)
             with c7b:
                 parallel_count = st.number_input("동시 매크로 개수", min_value=1, max_value=20, value=1, help="동일 계정 동시 로그인은 순차 지연으로 분산됩니다.")
+
+            # 우선순위 선택: '둘 다' 선택 시 노출
+            seat_order_label = None
+            if seat_type_label == "둘 다":
+                seat_order_label = st.selectbox("좌석 우선순위", options=["특실 우선", "일반석 우선"], index=0, help="둘 다 선택 시 클릭 우선순위")
 
             mode = st.radio("모드", options=["예약", "예약 대기"], horizontal=True)
 
@@ -767,7 +1124,10 @@ def main():
                         "seatPref": "economy" if seat_type_label == "일반석" else ("first" if seat_type_label == "특실" else "both"),
                         "parallelCount": int(parallel_count),
                         "parallelStaggerSec": float(parallel_stagger_sec),
+                        "refreshSpeed": int(refresh_speed),
                     }
+                    if seat_type_label == "둘 다":
+                        params["seatOrder"] = "prefer_first" if seat_order_label == "특실 우선" else "prefer_economy"
                     # Reset notified flag and stash params for notifications
                     st.session_state.notified = False
                     st.session_state.last_params = params
