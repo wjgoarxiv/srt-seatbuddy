@@ -1075,9 +1075,11 @@ def main():
             with c5:
                 d = st.date_input("출발일자", value=date.today())
             with c6:
-                now = datetime.now()
-                t_default = dtime(hour=now.hour, minute=now.minute)
-                t = st.time_input("출발시간", value=t_default, step=60)
+                # Initialize departure time once and persist via session_state
+                if "dep_time" not in st.session_state:
+                    _now = datetime.now()
+                    st.session_state["dep_time"] = dtime(hour=_now.hour, minute=_now.minute)
+                t = st.time_input("출발시간", key="dep_time", step=60)
             with c7:
                 num_to_check = st.number_input("조회할 열차 개수", min_value=1, max_value=10, value=3)
 
